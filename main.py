@@ -48,7 +48,7 @@ def init_db():
 init_db()
 
 # Admin user IDs (replace with actual admin user IDs)
-ADMINS = {123456789}  # Add your admin user IDs here
+ADMINS = {844843541}  # Add your admin user IDs here
 
 # Generate random string for start links
 def generate_random_string(length=10):
@@ -75,7 +75,7 @@ def send_file(chat_id, file_path, content_type, caption=None, reply_markup=None)
                 payload["reply_markup"] = json.dumps(reply_markup)
             requests.post(f"{API_URL}sendPhoto", data=payload, files=files)
     elif content_type == "video":
-        with open/file_path, "rb") as file:
+        with open(file_path, "rb") as file:
             files = {"video": file}
             payload = {"chat_id": chat_id, "caption": caption or "", "parse_mode": "Markdown"}
             if reply_markup:
