@@ -118,7 +118,40 @@ class TelegramBot:
         except Exception as e:
             self.send_message(chat_id, f"❌ خطا در ارسال فایل: {str(e)}")
     
-    def send_photo(self, chat_id, file_path, caption=None, reply_markup=None):
+    def send_photo_by_id(self, chat_id, file_id, caption=None, reply_markup=None):
+        """Send photo by file_id"""
+        try:
+            data = {
+                'chat_id': chat_id,
+                'photo': file_id
+            }
+            if caption:
+                data['caption'] = caption
+            if reply_markup:
+                data['reply_markup'] = json.dumps(reply_markup)
+                
+            requests.post(API_URL + "sendPhoto", data=data)
+        except Exception as e:
+            print(f"خطا در ارسال عکس با file_id: {e}")
+            self.send_message(chat_id, f"❌ خطا در ارسال عکس: {str(e)}")
+    
+    def send_document_by_id(self, chat_id, file_id, caption=None, reply_markup=None):
+        """Send document by file_id"""
+        try:
+            data = {
+                'chat_id': chat_id,
+                'document': file_id
+            }
+            if caption:
+                data['caption'] = caption
+            if reply_markup:
+                data['reply_markup'] = json.dumps(reply_markup)
+                
+            requests.post(API_URL + "sendDocument", data=data)
+        except Exception as e:
+            print(f"خطا در ارسال فایل با file_id: {e}")
+            self.send_message(chat_id, f"❌ خطا در ارسال فایل: {str(e)}")
+    
         """Send photo to user"""
         try:
             with open(file_path, 'rb') as file:
@@ -147,15 +180,27 @@ class TelegramBot:
                 # Download file
                 file_response = requests.get(file_url)
                 
-                # Save to tmp directory
-                filename = file_path.split('/')[-1]
-                local_path = f"/tmp/{filename}"
+                if file_response.status_code == 200:
+                    # Save to tmp directory
+                    filename = file_path.split('/')[-1]
+                    # Add timestamp to avoid conflicts
+                    timestamp = str(int(time.time()))
+                    local_path = f"/tmp/{timestamp}_{filename}"
+                    
+                    # Create tmp directory if it doesn't exist
+                    os.makedirs("/tmp", exist_ok=True)
+                    
+                    with open(local_path, 'wb') as f:
+                        f.write(file_response.content)
+                    
+                    return local_path
+                else:
+                    print(f"خطا در دانلود فایل: HTTP {file_response.status_code}")
+                    return None
+            else:
+                print(f"خطا در دریافت اطلاعات فایل: {file_info}")
+                return None
                 
-                with open(local_path, 'wb') as f:
-                    f.write(file_response.content)
-                
-                return local_path
-            return None
         except Exception as e:
             print(f"خطا در دانلود فایل: {e}")
             return None
@@ -179,11 +224,13 @@ class TelegramBot:
         
         # Get views count
         cursor.execute("SELECT views FROM files WHERE link_code = %s", (link_code,))
-        views = cursor.fetchone()[0] if cursor.fetchone() else 0
+        views_result = cursor.fetchone()
+        views = views_result[0] if views_result else 0
         
         # Get likes count
         cursor.execute("SELECT COUNT(*) FROM likes WHERE link_code = %s", (link_code,))
-        likes_count = cursor.fetchone()[0]
+        likes_result = cursor.fetchone()
+        likes_count = likes_result[0] if likes_result else 0
         
         # Check if user already liked
         cursor.execute("SELECT 1 FROM likes WHERE user_id = %s AND link_code = %s", (user_id, link_code))
@@ -234,7 +281,7 @@ class TelegramBot:
             cursor = conn.cursor()
             
             # Get file info
-            cursor.execute("SELECT * FROM files WHERE link_code = %s", (link_code,))
+            cursor.execute("SELECT id, file_id, file_type, file_name, file_path, link_code, content, upload_date, views FROM files WHERE link_code = %s", (link_code,))
             file_info = cursor.fetchone()
             
             if file_info:
@@ -242,7 +289,9 @@ class TelegramBot:
                 cursor.execute("UPDATE files SET views = views + 1 WHERE link_code = %s", (link_code,))
                 conn.commit()
                 
+                file_id = file_info[1]
                 file_type = file_info[2]
+                file_name = file_info[3]
                 file_path = file_info[4]
                 content = file_info[6]
                 
@@ -254,16 +303,25 @@ class TelegramBot:
                     self.send_message(chat_id, content, reply_markup=keyboard)
                 elif file_type in ['photo', 'image']:
                     # Send photo
-                    self.send_photo(chat_id, file_path, reply_markup=keyboard)
+                    if file_path and os.path.exists(file_path):
+                        self.send_photo(chat_id, file_path, reply_markup=keyboard)
+                    else:
+                        # Fallback: send via file_id
+                        self.send_photo_by_id(chat_id, file_id, reply_markup=keyboard)
                 else:
                     # Send document
-                    self.send_document(chat_id, file_path, reply_markup=keyboard)
+                    if file_path and os.path.exists(file_path):
+                        self.send_document(chat_id, file_path, reply_markup=keyboard)
+                    else:
+                        # Fallback: send via file_id
+                        self.send_document_by_id(chat_id, file_id, reply_markup=keyboard)
             else:
                 self.send_message(chat_id, "❌ فایل مورد نظر یافت نشد!")
             
             conn.close()
             
         except Exception as e:
+            print(f"خطا در handle_file_request: {e}")
             self.send_message(chat_id, f"❌ خطا در دریافت فایل: {str(e)}")
     
     def handle_callback_query(self, callback_query):
