@@ -1,202 +1,209 @@
 import requests
 import sqlite3
 import os
+import random
+import string
 import time
-import uuid
+from datetime import datetime
 
-TOKEN = '812616487:PcCYPrqiWmEmfVpPWaWWzxNtvIhjoOSNrK7yFLAX'
-URL = f"https://tapi.bale.ai/bot{TOKEN}"
-DB_PATH = "/tmp/uploader.db"
-ADMINS = ["zonercm"]  # ✅ Replace with your admin Telegram usernames
+# Telegram Bot Token
+TOKEN = "812616487:PcCYPrqiWmEmfVpPWaWWzxNtvIhjoOSNrK7yFLAX"  # Replace with your bot token
+BASE_URL = f"https://tapi.bale.ai/bot{TOKEN}/"
 
-# Setup DB
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cur = conn.cursor()
+# Admin user IDs (replace with actual admin Telegram IDs)
+ADMINS = {844843541}  # Set of admin user IDs
 
-cur.execute('''
-CREATE TABLE IF NOT EXISTS uploads (
-    id TEXT PRIMARY KEY,
-    uploader_id INTEGER,
-    type TEXT,
-    content TEXT,
-    file_id TEXT,
-    views INTEGER DEFAULT 0,
-    likes INTEGER DEFAULT 0
-)
-''')
+# Database setup
+DB_PATH = "/tmp/bot_database.db"
+FILES_DIR = "/tmp/bot_files"
+os.makedirs(FILES_DIR, exist_ok=True)
 
-cur.execute('''
-CREATE TABLE IF NOT EXISTS likes (
-    upload_id TEXT,
-    user_id INTEGER,
-    PRIMARY KEY(upload_id, user_id)
-)
-''')
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS uploads
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  type TEXT,
+                  content TEXT,
+                  file_path TEXT,
+                  link_key TEXT UNIQUE,
+                  view_count INTEGER DEFAULT 0)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS messages
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  message TEXT,
+                  timestamp TEXT)''')
+    conn.commit()
+    conn.close()
 
-conn.commit()
+def generate_random_string(length=10):
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
-# Helpers
-def get_updates(offset=None):
-    params = {'timeout': 100, 'offset': offset}
-    r = requests.get(URL + "/getUpdates", params=params)
-    return r.json()['result']
+def save_file(file_url, file_id):
+    file_path = f"{FILES_DIR}/{file_id}"
+    response = requests.get(file_url)
+    with open(file_path, 'wb') as f:
+        f.write(response.content)
+    return file_path
+
+def get_file_url(file_id):
+    response = requests.get(f"{BASE_URL}getFile", params={"file_id": file_id})
+    file_info = response.json()
+    if file_info["ok"]:
+        file_path = file_info["result"]["file_path"]
+        return f"https://tapi.bale.ai/file/bot{TOKEN}/{file_path}"
+    return None
+
+def save_upload(type, content, file_path, link_key):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO uploads (type, content, file_path, link_key, view_count) VALUES (?, ?, ?, ?, ?)",
+              (type, content, file_path, link_key, 0))
+    conn.commit()
+    conn.close()
+
+def get_upload(link_key):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT type, content, file_path, view_count FROM uploads WHERE link_key = ?", (link_key,))
+    result = c.fetchone()
+    conn.close()
+    return result
+
+def increment_view_count(link_key):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE uploads SET view_count = view_count + 1 WHERE link_key = ?", (link_key,))
+    conn.commit()
+    conn.close()
 
 def send_message(chat_id, text, reply_markup=None):
-    data = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
-    if reply_markup:
-        data['reply_markup'] = reply_markup
-    requests.post(URL + "/sendMessage", json=data)
-
-def send_file(chat_id, file_type, file_id, caption=None, reply_markup=None):
-    method = "sendDocument" if file_type == "document" else "sendPhoto"
-    data = {'chat_id': chat_id, file_type: file_id}
-    if caption:
-        data['caption'] = caption
-        data['parse_mode'] = 'HTML'
-    if reply_markup:
-        data['reply_markup'] = reply_markup
-    requests.post(URL + f"/{method}", json=data)
-
-def edit_buttons(chat_id, msg_id, reply_markup):
-    requests.post(URL + "/editMessageReplyMarkup", json={
-        'chat_id': chat_id,
-        'message_id': msg_id,
-        'reply_markup': reply_markup
-    })
-
-def build_buttons(upload_id, likes, views):
-    return {
-        "inline_keyboard": [[
-            {"text": f"❤️ {likes}", "callback_data": f"like:{upload_id}"},
-            {"text": f"👁 {views}", "callback_data": "noop"}
-        ]]
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML"
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    requests.post(f"{BASE_URL}sendMessage", json=payload)
 
-def handle_start(chat_id, text):
-    if text.startswith('/start_'):
-        uid = text.split('_', 1)[1]
-        cur.execute("SELECT type, content, file_id, views, likes FROM uploads WHERE id=?", (uid,))
-        row = cur.fetchone()
-        if not row:
-            send_message(chat_id, "❌ این محتوا پیدا نشد.")
-            return
-        utype, content, file_id, views, likes = row
-        cur.execute("UPDATE uploads SET views = views + 1 WHERE id=?", (uid,))
-        conn.commit()
-        markup = build_buttons(uid, likes, views + 1)
-        if utype == "text":
-            send_message(chat_id, content, reply_markup=markup)
-        else:
-            send_file(chat_id, utype, file_id, content, reply_markup=markup)
-    else:
-        send_message(chat_id, "سلام! برای دریافت محتوا از لینک /start_ استفاده کنید.")
+def send_file(chat_id, file_path, caption, reply_markup=None):
+    with open(file_path, 'rb') as f:
+        files = {"document": f}
+        payload = {
+            "chat_id": chat_id,
+            "caption": caption,
+            "parse_mode": "HTML"
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        requests.post(f"{BASE_URL}sendDocument", data=payload, files=files)
 
-def handle_like(chat_id, user_id, data, msg_id):
-    _, uid = data.split(':')
-    cur.execute("SELECT 1 FROM likes WHERE upload_id=? AND user_id=?", (uid, user_id))
-    if cur.fetchone():
+def broadcast_message(text):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT DISTINCT user_id FROM messages")
+    users = c.fetchall()
+    conn.close()
+    for user in users:
+        send_message(user[0], text)
+
+def handle_update(update):
+    if "message" not in update:
         return
-    cur.execute("INSERT INTO likes (upload_id, user_id) VALUES (?, ?)", (uid, user_id))
-    cur.execute("UPDATE uploads SET likes = likes + 1 WHERE id=?", (uid,))
+
+    message = update["message"]
+    chat_id = message["chat"]["id"]
+    user_id = message["from"]["id"]
+
+    # Log user message
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO messages (user_id, message, timestamp) VALUES (?, ?, ?)",
+              (user_id, str(message), datetime.now().isoformat()))
     conn.commit()
-    cur.execute("SELECT likes, views FROM uploads WHERE id=?", (uid,))
-    likes, views = cur.fetchone()
-    markup = build_buttons(uid, likes, views)
-    edit_buttons(chat_id, msg_id, markup)
+    conn.close()
 
-def save_upload(chat_id, user_id, utype, content, file_id=None):
-    uid = str(uuid.uuid4())[:8]
-    cur.execute("INSERT INTO uploads (id, uploader_id, type, content, file_id) VALUES (?, ?, ?, ?, ?)",
-                (uid, user_id, utype, content, file_id))
-    conn.commit()
-    send_message(chat_id, f"✅ ذخیره شد!\n\n🧩 لینک:\n/start_{uid}")
+    # Handle /start command
+    if "text" in message and message["text"].startswith("/start"):
+        link_key = message["text"].split()[-1] if len(message["text"].split()) > 1 else None
+        if link_key:
+            upload = get_upload(link_key)
+            if upload:
+                type, content, file_path, view_count = upload
+                increment_view_count(link_key)
+                reply_markup = {
+                    "inline_keyboard": [[{"text": "Like", "callback_data": f"like_{link_key}"}]]
+                }
+                if type == "text":
+                    send_message(chat_id, f"{content}\n\nViews: {view_count + 1}", reply_markup)
+                else:
+                    send_file(chat_id, file_path, f"Views: {view_count + 1}", reply_markup)
+            else:
+                send_message(chat_id, "Invalid or expired link.")
+        else:
+            send_message(chat_id, "Welcome! Send a file or text (if admin) or use a /start <code> link.")
+        return
 
-def broadcast_message(message):
-    cur.execute("SELECT DISTINCT uploader_id FROM uploads")
-    users = [r[0] for r in cur.fetchall()]
-    for user_id in users:
-        try:
-            requests.post(URL + "/copyMessage", json={
-                "chat_id": user_id,
-                "from_chat_id": message['chat']['id'],
-                "message_id": message['message_id']
-            })
-        except:
-            continue
+    # Admin commands
+    if user_id in ADMINS:
+        # Handle broadcast command
+        if "text" in message and message["text"].startswith("/broadcast"):
+            broadcast_text = message["text"][10:].strip()
+            if broadcast_text:
+                broadcast_message(broadcast_text)
+                send_message(chat_id, "Broadcast sent!")
+            else:
+                send_message(chat_id, "Please provide a message to broadcast.")
+            return
 
-# Main loop
+        # Handle file upload
+        if "document" in message or "photo" in message or "video" in message:
+            file_id = None
+            if "document" in message:
+                file_id = message["document"]["file_id"]
+            elif "photo" in message:
+                file_id = message["photo"][-1]["file_id"]
+            elif "video" in message:
+                file_id = message["video"]["file_id"]
+
+            file_url = get_file_url(file_id)
+            if file_url:
+                file_path = save_file(file_url, file_id)
+                link_key = generate_random_string()
+                save_upload("file", "", file_path, link_key)
+                send_message(chat_id, f"File uploaded! Share this link: /start {link_key}")
+            else:
+                send_message(chat_id, "Failed to upload file.")
+            return
+
+        # Handle text upload
+        if "text" in message:
+            text = message["text"]
+            link_key = generate_random_string()
+            save_upload("text", text, "", link_key)
+            send_message(chat_id, f"Text uploaded! Share this link: /start {link_key}")
+            return
+
+    # Non-admin users
+    send_message(chat_id, "Please use a /start <code> link to view content.")
+
 def main():
+    init_db()
     offset = None
-    waiting_text = {}
-
     while True:
         try:
-            updates = get_updates(offset)
-            for upd in updates:
-                offset = upd['update_id'] + 1
-
-                if 'message' in upd:
-                    msg = upd['message']
-                    chat_id = msg['chat']['id']
-                    user = msg.get('from', {})
-                    user_id = user.get('id')
-                    username = user.get('username', '')
-                    text = msg.get('text', '')
-                    is_admin = username in ADMINS
-
-                    # Start link
-                    if text.startswith("/start"):
-                        handle_start(chat_id, text)
-                        continue
-
-                    # Broadcast setup
-                    if is_admin and text == "/broadcast":
-                        send_message(chat_id, "لطفا پیام مورد نظر را ارسال کنید.")
-                        waiting_text[user_id] = 'broadcast'
-                        continue
-
-                    # Broadcast message
-                    if user_id in waiting_text:
-                        action = waiting_text.pop(user_id)
-                        if action == 'broadcast':
-                            broadcast_message(msg)
-                            send_message(chat_id, "📢 پیام به کاربران ارسال شد.")
-                        continue
-
-                    # Uploading by admins
-                    if is_admin:
-                        if 'text' in msg:
-                            save_upload(chat_id, user_id, "text", msg['text'])
-                        elif 'photo' in msg:
-                            file_id = msg['photo'][-1]['file_id']
-                            caption = msg.get('caption', '')
-                            save_upload(chat_id, user_id, "photo", caption, file_id)
-                        elif 'document' in msg:
-                            file_id = msg['document']['file_id']
-                            caption = msg.get('caption', '')
-                            save_upload(chat_id, user_id, "document", caption, file_id)
-                        else:
-                            send_message(chat_id, "❌ این نوع فایل پشتیبانی نمی‌شود.")
-                    else:
-                        send_message(chat_id, "⛔️ این ربات فقط مخصوص مدیران است.")
-
-                elif 'callback_query' in upd:
-                    cb = upd['callback_query']
-                    data = cb['data']
-                    message = cb['message']
-                    user = cb.get('from', {})
-                    chat_id = message['chat']['id']
-                    msg_id = message['message_id']
-                    user_id = user.get('id')
-
-                    if data.startswith('like:'):
-                        handle_like(chat_id, user_id, data, msg_id)
-                    elif data == 'noop':
-                        pass
-
+            params = {"timeout": 30, "offset": offset}
+            response = requests.get(f"{BASE_URL}getUpdates", params=params, timeout=35)
+            data = response.json()
+            if not data["ok"]:
+                continue
+            for update in data["result"]:
+                handle_update(update)
+                offset = update["update_id"] + 1
         except Exception as e:
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Error:", e)
-            time.sleep(1)
+            print(f"Error: {e}")
+            time.sleep(0.3)  # Brief pause to prevent tight loop on errors
 
 if __name__ == "__main__":
     main()
