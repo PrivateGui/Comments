@@ -8,7 +8,7 @@ CHANNEL_ID = 5702875694
 CHANNEL_LINK = "https://ble.ir/snacks"
 API_URL = f"https://tapi.bale.ai/bot{TOKEN}"
 
-conn = sqlite3.connect("app/feedbackssss.db", check_same_thread=False)
+conn = sqlite3.connect("/tmp/feedbackssss.db", check_same_thread=False)
 cur = conn.cursor()
 
 cur.execute("""
