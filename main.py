@@ -7,13 +7,12 @@ import uuid
 TOKEN = '812616487:PcCYPrqiWmEmfVpPWaWWzxNtvIhjoOSNrK7yFLAX'
 URL = f"https://tapi.bale.ai/bot{TOKEN}"
 DB_PATH = "/tmp/uploader.db"
-UPLOAD_PATH = "/tmp"
-ADMINS = ["zonercm"]  # change usernames
+ADMINS = ["zonercm"]  # ✅ Replace with your admin Telegram usernames
 
+# Setup DB
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cur = conn.cursor()
 
-# --- Create tables
 cur.execute('''
 CREATE TABLE IF NOT EXISTS uploads (
     id TEXT PRIMARY KEY,
@@ -36,6 +35,7 @@ CREATE TABLE IF NOT EXISTS likes (
 
 conn.commit()
 
+# Helpers
 def get_updates(offset=None):
     params = {'timeout': 100, 'offset': offset}
     r = requests.get(URL + "/getUpdates", params=params)
@@ -72,7 +72,7 @@ def build_buttons(upload_id, likes, views):
         ]]
     }
 
-def handle_start(chat_id, text, username):
+def handle_start(chat_id, text):
     if text.startswith('/start_'):
         uid = text.split('_', 1)[1]
         cur.execute("SELECT type, content, file_id, views, likes FROM uploads WHERE id=?", (uid,))
@@ -109,7 +109,7 @@ def save_upload(chat_id, user_id, utype, content, file_id=None):
     cur.execute("INSERT INTO uploads (id, uploader_id, type, content, file_id) VALUES (?, ?, ?, ?, ?)",
                 (uid, user_id, utype, content, file_id))
     conn.commit()
-    send_message(chat_id, f"✅ ذخیره شد!\nلینک دسترسی:\n/start_{uid}")
+    send_message(chat_id, f"✅ ذخیره شد!\n\n🧩 لینک:\n/start_{uid}")
 
 def broadcast_message(message):
     cur.execute("SELECT DISTINCT uploader_id FROM uploads")
@@ -124,6 +124,7 @@ def broadcast_message(message):
         except:
             continue
 
+# Main loop
 def main():
     offset = None
     waiting_text = {}
@@ -137,30 +138,32 @@ def main():
                 if 'message' in upd:
                     msg = upd['message']
                     chat_id = msg['chat']['id']
-                    user_id = msg['from']['id']
-                    username = msg['from'].get('username', '')
+                    user = msg.get('from', {})
+                    user_id = user.get('id')
+                    username = user.get('username', '')
                     text = msg.get('text', '')
                     is_admin = username in ADMINS
 
                     # Start link
                     if text.startswith("/start"):
-                        handle_start(chat_id, text, username)
+                        handle_start(chat_id, text)
                         continue
 
-                    # Broadcast
+                    # Broadcast setup
                     if is_admin and text == "/broadcast":
-                        send_message(chat_id, "پیام را فوروارد کنید یا ارسال نمایید.")
+                        send_message(chat_id, "لطفا پیام مورد نظر را ارسال کنید.")
                         waiting_text[user_id] = 'broadcast'
                         continue
 
+                    # Broadcast message
                     if user_id in waiting_text:
                         action = waiting_text.pop(user_id)
                         if action == 'broadcast':
                             broadcast_message(msg)
-                            send_message(chat_id, "📢 ارسال شد.")
+                            send_message(chat_id, "📢 پیام به کاربران ارسال شد.")
                         continue
 
-                    # Handle admin uploads
+                    # Uploading by admins
                     if is_admin:
                         if 'text' in msg:
                             save_upload(chat_id, user_id, "text", msg['text'])
@@ -173,16 +176,18 @@ def main():
                             caption = msg.get('caption', '')
                             save_upload(chat_id, user_id, "document", caption, file_id)
                         else:
-                            send_message(chat_id, "❌ نوع فایل پشتیبانی نمی‌شود.")
+                            send_message(chat_id, "❌ این نوع فایل پشتیبانی نمی‌شود.")
                     else:
-                        send_message(chat_id, "این بات مخصوص مدیران است.")
-                
+                        send_message(chat_id, "⛔️ این ربات فقط مخصوص مدیران است.")
+
                 elif 'callback_query' in upd:
                     cb = upd['callback_query']
                     data = cb['data']
-                    chat_id = cb['message']['chat']['id']
-                    msg_id = cb['message']['message_id']
-                    user_id = cb['from']['id']
+                    message = cb['message']
+                    user = cb.get('from', {})
+                    chat_id = message['chat']['id']
+                    msg_id = message['message_id']
+                    user_id = user.get('id')
 
                     if data.startswith('like:'):
                         handle_like(chat_id, user_id, data, msg_id)
@@ -190,7 +195,7 @@ def main():
                         pass
 
         except Exception as e:
-            print("Error:", e)
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ❌ Error:", e)
             time.sleep(1)
 
 if __name__ == "__main__":
