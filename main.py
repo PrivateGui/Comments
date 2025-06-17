@@ -1,326 +1,623 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import json
 import requests
 import sqlite3
 import os
-import random
 import string
-import json
-from datetime import datetime
-import tempfile
+import random
+import time
+import threading
+from urllib.parse import urljoin
 
-# Bot configuration
-BOT_TOKEN = "812616487:PcCYPrqiWmEmfVpPWaWWzxNtvIhjoOSNrK7yFLAX"  # Replace with your Telegram bot token
-API_URL = f"https://tapi.bale.ai/bot{BOT_TOKEN}/"
-TMP_DIR = "/tmp/telegram_bot_files"
-DB_PATH = "/tmp/telegram_bot.db"
+# Bot Configuration
+BOT_TOKEN = "812616487:PcCYPrqiWmEmfVpPWaWWzxNtvIhjoOSNrK7yFLAX"  # Replace with your bot token
+ADMIN_IDS = [844843541]  # Replace with admin Telegram IDs
+BASE_URL = f"https://tapi.bale.ai/bot{BOT_TOKEN}/"
 
-# Ensure tmp directory exists
-if not os.path.exists(TMP_DIR):
-    os.makedirs(TMP_DIR)
+# Database setup
+DB_PATH = "/tmp/uploader_bot.db"
+FILES_DIR = "/tmp/bot_files/"
 
-# Initialize SQLite database
-def init_db():
+# Ensure directories exist
+os.makedirs(FILES_DIR, exist_ok=True)
+
+def init_database():
+    """Initialize SQLite database"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS files (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        file_path TEXT,
-        content_type TEXT,
-        random_string TEXT UNIQUE,
-        view_count INTEGER DEFAULT 0
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS texts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        text_content TEXT,
-        random_string TEXT UNIQUE,
-        view_count INTEGER DEFAULT 0
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS likes (
-        random_string TEXT,
-        user_id INTEGER,
-        UNIQUE(random_string, user_id)
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS admins (
-        user_id INTEGER PRIMARY KEY
-    )''')
+    cursor = conn.cursor()
+    
+    # Create tables
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS uploads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            upload_id TEXT UNIQUE NOT NULL,
+            type TEXT NOT NULL,
+            file_path TEXT,
+            text_content TEXT,
+            caption TEXT,
+            admin_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            views INTEGER DEFAULT 0
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS likes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            upload_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(upload_id, user_id)
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS admin_states (
+            admin_id INTEGER PRIMARY KEY,
+            state TEXT DEFAULT 'normal'
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
-init_db()
-
-# Admin user IDs (replace with actual admin user IDs)
-ADMINS = {844843541}  # Add your admin user IDs here
-
-# Generate random string for start links
 def generate_random_string(length=10):
+    """Generate random string for upload IDs"""
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
-# Send message with requests
+def send_request(method, params=None, files=None):
+    """Send request to Telegram API"""
+    url = urljoin(BASE_URL, method)
+    try:
+        if files:
+            response = requests.post(url, data=params, files=files, timeout=30)
+        else:
+            response = requests.post(url, json=params, timeout=30)
+        return response.json()
+    except Exception as e:
+        print(f"Request error: {e}")
+        return None
+
 def send_message(chat_id, text, reply_markup=None):
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
+    """Send text message"""
+    params = {
+        'chat_id': chat_id,
+        'text': text,
+        'parse_mode': 'HTML'
     }
     if reply_markup:
-        payload["reply_markup"] = json.dumps(reply_markup)
-    requests.post(f"{API_URL}sendMessage", json=payload)
+        params['reply_markup'] = json.dumps(reply_markup)
+    
+    return send_request('sendMessage', params)
 
-# Send file with requests
-def send_file(chat_id, file_path, content_type, caption=None, reply_markup=None):
-    if content_type == "photo":
-        with open(file_path, "rb") as file:
-            files = {"photo": file}
-            payload = {"chat_id": chat_id, "caption": caption or "", "parse_mode": "Markdown"}
-            if reply_markup:
-                payload["reply_markup"] = json.dumps(reply_markup)
-            requests.post(f"{API_URL}sendPhoto", data=payload, files=files)
-    elif content_type == "video":
-        with open(file_path, "rb") as file:
-            files = {"video": file}
-            payload = {"chat_id": chat_id, "caption": caption or "", "parse_mode": "Markdown"}
-            if reply_markup:
-                payload["reply_markup"] = json.dumps(reply_markup)
-            requests.post(f"{API_URL}sendVideo", data=payload, files=files)
-    elif content_type == "document":
-        with open(file_path, "rb") as file:
-            files = {"document": file}
-            payload = {"chat_id": chat_id, "caption": caption or "", "parse_mode": "Markdown"}
-            if reply_markup:
-                payload["reply_markup"] = json.dumps(reply_markup)
-            requests.post(f"{API_URL}sendDocument", data=payload, files=files)
+def send_document(chat_id, document_path, caption=None, reply_markup=None):
+    """Send document file"""
+    params = {
+        'chat_id': chat_id,
+        'parse_mode': 'HTML'
+    }
+    if caption:
+        params['caption'] = caption
+    if reply_markup:
+        params['reply_markup'] = json.dumps(reply_markup)
+    
+    with open(document_path, 'rb') as doc:
+        files = {'document': doc}
+        return send_request('sendDocument', params, files)
 
-# Download file from Telegram
-def download_file(file_id):
-    response = requests.get(f"{API_URL}getFile", params={"file_id": file_id})
-    file_info = response.json()["result"]
-    file_path = file_info["file_path"]
-    file_url = f"https://tapi.bale.ai/file/bot{BOT_TOKEN}/{file_path}"
-    file_response = requests.get(file_url)
-    temp_file = os.path.join(TMP_DIR, f"{file_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-    with open(temp_file, "wb") as f:
-        f.write(file_response.content)
-    return temp_file
+def send_photo(chat_id, photo_path, caption=None, reply_markup=None):
+    """Send photo file"""
+    params = {
+        'chat_id': chat_id,
+        'parse_mode': 'HTML'
+    }
+    if caption:
+        params['caption'] = caption
+    if reply_markup:
+        params['reply_markup'] = json.dumps(reply_markup)
+    
+    with open(photo_path, 'rb') as photo:
+        files = {'photo': photo}
+        return send_request('sendPhoto', params, files)
 
-# Check if user is admin
-def is_admin(user_id):
-    return user_id in ADMINS
+def send_video(chat_id, video_path, caption=None, reply_markup=None):
+    """Send video file"""
+    params = {
+        'chat_id': chat_id,
+        'parse_mode': 'HTML'
+    }
+    if caption:
+        params['caption'] = caption
+    if reply_markup:
+        params['reply_markup'] = json.dumps(reply_markup)
+    
+    with open(video_path, 'rb') as video:
+        files = {'video': video}
+        return send_request('sendVideo', params, files)
 
-# Add admin to database
-def add_admin(user_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (user_id,))
-    conn.commit()
-    conn.close()
+def send_audio(chat_id, audio_path, caption=None, reply_markup=None):
+    """Send audio file"""
+    params = {
+        'chat_id': chat_id,
+        'parse_mode': 'HTML'
+    }
+    if caption:
+        params['caption'] = caption
+    if reply_markup:
+        params['reply_markup'] = json.dumps(reply_markup)
+    
+    with open(audio_path, 'rb') as audio:
+        files = {'audio': audio}
+        return send_request('sendAudio', params, files)
 
-# Get admin reply keyboard
+def download_file(file_id, file_path):
+    """Download file from Telegram"""
+    # Get file info
+    params = {'file_id': file_id}
+    file_info = send_request('getFile', params)
+    
+    if not file_info or not file_info.get('ok'):
+        return False
+    
+    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info['result']['file_path']}"
+    
+    try:
+        response = requests.get(file_url, timeout=30)
+        with open(file_path, 'wb') as f:
+            f.write(response.content)
+        return True
+    except Exception as e:
+        print(f"Download error: {e}")
+        return False
+
 def get_admin_keyboard():
+    """Get admin reply keyboard"""
     return {
-        "keyboard": [
-            [{"text": "📤 آپلود فایل"}],
-            [{"text": "📝 آپلود متن"}],
-            [{"text": "📢 ارسال پیام همگانی"}]
+        'keyboard': [
+            ['📁 آپلود فایل', '📝 آپلود متن'],
+            ['📢 ارسال پیام همگانی', '📊 آمار بات'],
+            ['❌ لغو عملیات']
         ],
-        "resize_keyboard": True
+        'resize_keyboard': True,
+        'one_time_keyboard': False
     }
 
-# Get inline keyboard for view count and like
-def get_inline_keyboard(random_string, view_count):
+def get_content_keyboard(upload_id, views, likes_count, user_liked=False):
+    """Get inline keyboard for content"""
+    like_text = "💚 لایک شده" if user_liked else "🤍 لایک"
+    
     return {
-        "inline_keyboard": [
-            [{"text": f"👀 تعداد بازدید: {view_count}", "callback_data": f"view_{random_string}"}],
-            [{"text": "👍 لایک", "callback_data": f"like_{random_string}"}]
+        'inline_keyboard': [
+            [
+                {'text': f'👁 {views} بازدید', 'callback_data': f'views_{upload_id}'},
+                {'text': f'{like_text} ({likes_count})', 'callback_data': f'like_{upload_id}'}
+            ]
         ]
     }
 
-# Save file to database
-def save_file(file_path, content_type, random_string):
+def get_admin_state(admin_id):
+    """Get admin current state"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT INTO files (file_path, content_type, random_string) VALUES (?, ?, ?)",
-              (file_path, content_type, random_string))
+    cursor = conn.cursor()
+    cursor.execute('SELECT state FROM admin_states WHERE admin_id = ?', (admin_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else 'normal'
+
+def set_admin_state(admin_id, state):
+    """Set admin state"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR REPLACE INTO admin_states (admin_id, state) VALUES (?, ?)', 
+                   (admin_id, state))
     conn.commit()
     conn.close()
 
-# Save text to database
-def save_text(text_content, random_string):
+def save_upload(upload_id, upload_type, file_path=None, text_content=None, caption=None, admin_id=None):
+    """Save upload to database"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT INTO texts (text_content, random_string) VALUES (?, ?)",
-              (text_content, random_string))
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO uploads (upload_id, type, file_path, text_content, caption, admin_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (upload_id, upload_type, file_path, text_content, caption, admin_id))
     conn.commit()
     conn.close()
 
-# Increment view count
-def increment_view_count(random_string, table):
+def get_upload(upload_id):
+    """Get upload from database"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(f"UPDATE {table} SET view_count = view_count + 1 WHERE random_string = ?", (random_string,))
-    conn.commit()
-    conn.close()
-
-# Get file info
-def get_file_info(random_string):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT file_path, content_type, view_count FROM files WHERE random_string = ?", (random_string,))
-    result = c.fetchone()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM uploads WHERE upload_id = ?', (upload_id,))
+    result = cursor.fetchone()
     conn.close()
     return result
 
-# Get text info
-def get_text_info(random_string):
+def increment_views(upload_id):
+    """Increment view count"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT text_content, view_count FROM texts WHERE random_string = ?", (random_string,))
-    result = c.fetchone()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE uploads SET views = views + 1 WHERE upload_id = ?', (upload_id,))
+    conn.commit()
     conn.close()
-    return result
 
-# Check if user has liked
-def has_liked(user_id, random_string):
+def toggle_like(upload_id, user_id):
+    """Toggle like for user"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT 1 FROM likes WHERE user_id = ? AND random_string = ?", (user_id, random_string))
-    result = c.fetchone()
+    cursor = conn.cursor()
+    
+    # Check if already liked
+    cursor.execute('SELECT id FROM likes WHERE upload_id = ? AND user_id = ?', (upload_id, user_id))
+    existing = cursor.fetchone()
+    
+    if existing:
+        # Remove like
+        cursor.execute('DELETE FROM likes WHERE upload_id = ? AND user_id = ?', (upload_id, user_id))
+        action = 'removed'
+    else:
+        # Add like
+        cursor.execute('INSERT INTO likes (upload_id, user_id) VALUES (?, ?)', (upload_id, user_id))
+        action = 'added'
+    
+    conn.commit()
+    conn.close()
+    return action
+
+def get_likes_count(upload_id):
+    """Get likes count for upload"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM likes WHERE upload_id = ?', (upload_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else 0
+
+def user_has_liked(upload_id, user_id):
+    """Check if user has liked the upload"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT id FROM likes WHERE upload_id = ? AND user_id = ?', (upload_id, user_id))
+    result = cursor.fetchone()
     conn.close()
     return bool(result)
 
-# Add like
-def add_like(user_id, random_string):
+def get_bot_stats():
+    """Get bot statistics"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    try:
-        c.execute("INSERT INTO likes (user_id, random_string) VALUES (?, ?)", (user_id, random_string))
-        conn.commit()
-    except sqlite3.IntegrityError:
-        pass  # User already liked
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT COUNT(*) FROM uploads')
+    total_uploads = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT SUM(views) FROM uploads')
+    total_views = cursor.fetchone()[0] or 0
+    
+    cursor.execute('SELECT COUNT(*) FROM likes')
+    total_likes = cursor.fetchone()[0]
+    
     conn.close()
+    
+    return {
+        'uploads': total_uploads,
+        'views': total_views,
+        'likes': total_likes
+    }
 
-# Get all chat IDs (for broadcasting)
-def get_all_chat_ids():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT DISTINCT user_id FROM likes")  # Assuming likes table tracks users
-    chat_ids = [row[0] for row in c.fetchall()]
-    conn.close()
-    return chat_ids
+def broadcast_message(message_text, admins_only=False):
+    """Broadcast message to all users (simplified - you'd need to track users)"""
+    # This is a simplified version - in production you'd maintain a users table
+    pass
 
-# Main bot logic
-def handle_update(update):
-    if "message" in update:
-        message = update["message"]
-        chat_id = message["chat"]["id"]
-        user_id = message["from"]["id"]
-        text = message.get("text", "")
-
-        # Check if user is admin
-        if is_admin(user_id):
-            # Show admin keyboard
-            if text == "/start":
-                send_message(chat_id, "👋 خوش آمدید، مدیر گرامی! لطفاً از منو انتخاب کنید:", get_admin_keyboard())
-            elif text == "📤 آپلود فایل":
-                send_message(chat_id, "📎 لطفاً فایل خود (عکس، ویدیو یا سند) را ارسال کنید:")
-            elif text == "📝 آپلود متن":
-                send_message(chat_id, "📜 لطفاً متن خود را ارسال کنید:")
-            elif text == "📢 ارسال پیام همگانی":
-                send_message(chat_id, "📣 پیام خود را برای ارسال همگانی وارد کنید:")
-            elif "photo" in message:
-                file_id = message["photo"][-1]["file_id"]
-                file_path = download_file(file_id)
-                random_string = generate_random_string()
-                save_file(file_path, "photo", random_string)
-                send_message(chat_id, f"✅ فایل آپلود شد!\nلینک: `/start {random_string}`")
-            elif "video" in message:
-                file_id = message["video"]["file_id"]
-                file_path = download_file(file_id)
-                random_string = generate_random_string()
-                save_file(file_path, "video", random_string)
-                send_message(chat_id, f"✅ فایل آپلود شد!\nلینک: `/start {random_string}`")
-            elif "document" in message:
-                file_id = message["document"]["file_id"]
-                file_path = download_file(file_id)
-                random_string = generate_random_string()
-                save_file(file_path, "document", random_string)
-                send_message(chat_id, f"✅ فایل آپلود شد!\nلینک: `/start {random_string}`")
-            elif text and not text.startswith("/"):
-                # Handle text upload or broadcast
-                if update["message"]["reply_to_message"] and update["message"]["reply_to_message"]["text"] == "📜 لطفاً متن خود را ارسال کنید:":
-                    random_string = generate_random_string()
-                    save_text(text, random_string)
-                    send_message(chat_id, f"✅ متن ذخیره شد!\nلینک: `/start {random_string}`")
-                elif update["message"]["reply_to_message"] and update["message"]["reply_to_message"]["text"] == "📣 پیام خود را برای ارسال همگانی وارد کنید:":
-                    chat_ids = get_all_chat_ids()
-                    for cid in chat_ids:
-                        send_message(cid, text)
-                    send_message(chat_id, "✅ پیام همگانی ارسال شد!")
-                else:
-                    send_message(chat_id, "❓ لطفاً از منو انتخاب کنید:", get_admin_keyboard())
+def handle_start_command(chat_id, user_id, args):
+    """Handle /start command"""
+    if args:
+        # Handle start link
+        upload_id = args
+        upload = get_upload(upload_id)
+        
+        if not upload:
+            send_message(chat_id, "⚠️ پیوند نامعتبر یا منقضی شده است.")
+            return
+        
+        # Increment views
+        increment_views(upload_id)
+        
+        # Get updated stats
+        views = upload[8] + 1  # views + 1
+        likes_count = get_likes_count(upload_id)
+        user_liked = user_has_liked(upload_id, user_id)
+        
+        # Create keyboard
+        keyboard = get_content_keyboard(upload_id, views, likes_count, user_liked)
+        
+        if upload[2] == 'text':
+            # Send text
+            text = upload[4] or "📝 متن ارسالی"
+            send_message(chat_id, text, keyboard)
         else:
-            # Non-admin user
-            if text.startswith("/start"):
-                if text == "/start":
-                    send_message(chat_id, "👋 سلام! به ربات خوش آمدید!")
+            # Send file
+            file_path = upload[3]
+            caption = upload[5] or ""
+            
+            if upload[2] == 'photo':
+                send_photo(chat_id, file_path, caption, keyboard)
+            elif upload[2] == 'video':
+                send_video(chat_id, file_path, caption, keyboard)
+            elif upload[2] == 'audio':
+                send_audio(chat_id, file_path, caption, keyboard)
+            else:
+                send_document(chat_id, file_path, caption, keyboard)
+    else:
+        # Regular start
+        if user_id in ADMIN_IDS:
+            send_message(chat_id, 
+                        "🔥 سلام ادمین عزیز!\n"
+                        "به بات آپلودر خوش آمدید.\n\n"
+                        "🎛 از کیبورد زیر برای مدیریت بات استفاده کنید:",
+                        get_admin_keyboard())
+        else:
+            send_message(chat_id, 
+                        "👋 سلام و خوش آمدید!\n"
+                        "این بات برای اشتراک فایل و متن استفاده می‌شود.\n\n"
+                        "📎 برای دریافت محتوا، روی پیوندهای اشتراک کلیک کنید.")
+
+def handle_admin_message(chat_id, user_id, message):
+    """Handle admin messages"""
+    text = message.get('text', '')
+    state = get_admin_state(user_id)
+    
+    # Handle cancel
+    if text == '❌ لغو عملیات':
+        set_admin_state(user_id, 'normal')
+        send_message(chat_id, "✅ عملیات لغو شد.", get_admin_keyboard())
+        return
+    
+    if state == 'normal':
+        if text == '📁 آپلود فایل':
+            set_admin_state(user_id, 'waiting_file')
+            send_message(chat_id, "📁 فایل مورد نظر را ارسال کنید:")
+            
+        elif text == '📝 آپلود متن':
+            set_admin_state(user_id, 'waiting_text')
+            send_message(chat_id, "📝 متن مورد نظر را ارسال کنید:")
+            
+        elif text == '📢 ارسال پیام همگانی':
+            set_admin_state(user_id, 'waiting_broadcast')
+            send_message(chat_id, "📢 پیام همگانی را ارسال کنید:")
+            
+        elif text == '📊 آمار بات':
+            stats = get_bot_stats()
+            stats_text = (
+                f"📊 آمار بات:\n\n"
+                f"📁 کل آپلودها: {stats['uploads']}\n"
+                f"👁 کل بازدیدها: {stats['views']}\n"
+                f"❤️ کل لایک‌ها: {stats['likes']}"
+            )
+            send_message(chat_id, stats_text, get_admin_keyboard())
+            
+    elif state == 'waiting_text':
+        # Save text upload
+        upload_id = generate_random_string()
+        save_upload(upload_id, 'text', text_content=text, admin_id=user_id)
+        
+        start_link = f"/start {upload_id}"
+        response_text = (
+            f"✅ متن با موفقیت ذخیره شد!\n\n"
+            f"🔗 پیوند اشتراک:\n"
+            f"<code>{start_link}</code>\n\n"
+            f"📋 برای کپی روی پیوند کلیک کنید."
+        )
+        
+        set_admin_state(user_id, 'normal')
+        send_message(chat_id, response_text, get_admin_keyboard())
+        
+    elif state == 'waiting_broadcast':
+        # Handle broadcast
+        # In a real implementation, you'd send to all users
+        send_message(chat_id, "📢 پیام همگانی ارسال شد! (نسخه ساده)", get_admin_keyboard())
+        set_admin_state(user_id, 'normal')
+
+def handle_admin_file(chat_id, user_id, message):
+    """Handle admin file uploads"""
+    state = get_admin_state(user_id)
+    
+    if state != 'waiting_file':
+        return
+    
+    # Determine file type and get file_id
+    file_id = None
+    file_type = None
+    file_extension = ""
+    
+    if 'photo' in message:
+        file_id = message['photo'][-1]['file_id']  # Get highest resolution
+        file_type = 'photo'
+        file_extension = '.jpg'
+    elif 'document' in message:
+        file_id = message['document']['file_id']
+        file_type = 'document'
+        file_name = message['document'].get('file_name', 'file')
+        file_extension = os.path.splitext(file_name)[1] or '.bin'
+    elif 'video' in message:
+        file_id = message['video']['file_id']
+        file_type = 'video'
+        file_extension = '.mp4'
+    elif 'audio' in message:
+        file_id = message['audio']['file_id']
+        file_type = 'audio'
+        file_extension = '.mp3'
+    elif 'voice' in message:
+        file_id = message['voice']['file_id']
+        file_type = 'audio'
+        file_extension = '.ogg'
+    elif 'video_note' in message:
+        file_id = message['video_note']['file_id']
+        file_type = 'video'
+        file_extension = '.mp4'
+    
+    if not file_id:
+        send_message(chat_id, "⚠️ نوع فایل پشتیبانی نمی‌شود.")
+        return
+    
+    # Generate upload ID and file path
+    upload_id = generate_random_string()
+    file_path = os.path.join(FILES_DIR, f"{upload_id}{file_extension}")
+    
+    # Download file
+    if download_file(file_id, file_path):
+        # Get caption if exists
+        caption = message.get('caption', '')
+        
+        # Save upload
+        save_upload(upload_id, file_type, file_path, caption=caption, admin_id=user_id)
+        
+        start_link = f"/start {upload_id}"
+        response_text = (
+            f"✅ فایل با موفقیت آپلود شد!\n\n"
+            f"📁 نوع: {file_type}\n"
+            f"🔗 پیوند اشتراک:\n"
+            f"<code>{start_link}</code>\n\n"
+            f"📋 برای کپی روی پیوند کلیک کنید."
+        )
+        
+        set_admin_state(user_id, 'normal')
+        send_message(chat_id, response_text, get_admin_keyboard())
+    else:
+        send_message(chat_id, "❌ خطا در دانلود فایل. دوباره تلاش کنید.")
+
+def handle_callback_query(callback_query):
+    """Handle inline keyboard callbacks"""
+    query_id = callback_query['id']
+    user_id = callback_query['from']['id']
+    chat_id = callback_query['message']['chat']['id']
+    message_id = callback_query['message']['message_id']
+    data = callback_query['data']
+    
+    if data.startswith('like_'):
+        upload_id = data.replace('like_', '')
+        
+        # Toggle like
+        action = toggle_like(upload_id, user_id)
+        
+        # Get updated stats
+        upload = get_upload(upload_id)
+        if upload:
+            views = upload[8]
+            likes_count = get_likes_count(upload_id)
+            user_liked = user_has_liked(upload_id, user_id)
+            
+            # Update keyboard
+            keyboard = get_content_keyboard(upload_id, views, likes_count, user_liked)
+            
+            # Edit message
+            params = {
+                'chat_id': chat_id,
+                'message_id': message_id,
+                'reply_markup': json.dumps(keyboard)
+            }
+            send_request('editMessageReplyMarkup', params)
+            
+            # Answer callback
+            like_text = "❤️ لایک شد!" if action == 'added' else "💔 لایک برداشته شد!"
+            params = {
+                'callback_query_id': query_id,
+                'text': like_text,
+                'show_alert': False
+            }
+            send_request('answerCallbackQuery', params)
+    
+    elif data.startswith('views_'):
+        # Just show views count
+        upload_id = data.replace('views_', '')
+        upload = get_upload(upload_id)
+        if upload:
+            views = upload[8]
+            params = {
+                'callback_query_id': query_id,
+                'text': f"👁 تعداد بازدید: {views}",
+                'show_alert': True
+            }
+            send_request('answerCallbackQuery', params)
+
+def process_update(update):
+    """Process single update"""
+    try:
+        if 'message' in update:
+            message = update['message']
+            chat_id = message['chat']['id']
+            user_id = message['from']['id']
+            
+            # Handle commands
+            if 'text' in message and message['text'].startswith('/'):
+                if message['text'].startswith('/start'):
+                    args = message['text'][7:].strip() if len(message['text']) > 6 else None
+                    handle_start_command(chat_id, user_id, args)
+                return
+            
+            # Handle admin messages
+            if user_id in ADMIN_IDS:
+                if any(key in message for key in ['photo', 'document', 'video', 'audio', 'voice', 'video_note']):
+                    handle_admin_file(chat_id, user_id, message)
                 else:
-                    random_string = text.split(" ")[1] if len(text.split(" ")) > 1 else None
-                    if random_string:
-                        # Check if it's a file
-                        file_info = get_file_info(random_string)
-                        if file_info:
-                            file_path, content_type, view_count = file_info
-                            increment_view_count(random_string, "files")
-                            view_count += 1
-                            send_file(chat_id, file_path, content_type, caption=f"📄 فایل دریافت شد!", reply_markup=get_inline_keyboard(random_string, view_count))
-                        # Check if it's a text
-                        text_info = get_text_info(random_string)
-                        if text_info:
-                            text_content, view_count = text_info
-                            increment_view_count(random_string, "texts")
-                            view_count += 1
-                            send_message(chat_id, f"📜 {text_content}", get_inline_keyboard(random_string, view_count))
-                        else:
-                            send_message(chat_id, "❌ لینک نامعتبر است!")
+                    handle_admin_message(chat_id, user_id, message)
             else:
-                send_message(chat_id, "👋 سلام! لطفاً از دستور /start استفاده کنید.")
+                # Non-admin users
+                send_message(chat_id, "🔒 شما دسترسی ادمین ندارید.")
+        
+        elif 'callback_query' in update:
+            handle_callback_query(update['callback_query'])
+            
+    except Exception as e:
+        print(f"Error processing update: {e}")
 
-    elif "callback_query" in update:
-        callback = update["callback_query"]
-        chat_id = callback["message"]["chat"]["id"]
-        user_id = callback["from"]["id"]
-        data = callback["data"]
-        random_string = data.split("_")[1]
+def get_updates(offset=0):
+    """Get updates from Telegram"""
+    params = {
+        'offset': offset,
+        'timeout': 30,
+        'allowed_updates': ['message', 'callback_query']
+    }
+    return send_request('getUpdates', params)
 
-        if data.startswith("like_"):
-            if not has_liked(user_id, random_string):
-                add_like(user_id, random_string)
-                send_message(chat_id, "👍 لایک شما ثبت شد!")
-            else:
-                send_message(chat_id, "⚠️ شما قبلاً این پست را لایک کرده‌اید!")
-        elif data.startswith("view_"):
-            file_info = get_file_info(random_string)
-            if file_info:
-                _, _, view_count = file_info
-                send_message(chat_id, f"👀 تعداد بازدید: {view_count}")
-            text_info = get_text_info(random_string)
-            if text_info:
-                _, view_count = text_info
-                send_message(chat_id, f"👀 تعداد بازدید: {view_count}")
-
-# Long polling
-def poll_updates():
-    offset = None
+def main():
+    """Main bot loop"""
+    print("🚀 Bot starting...")
+    
+    # Initialize database
+    init_database()
+    
+    # Set bot commands
+    commands = [
+        {'command': 'start', 'description': 'شروع بات'}
+    ]
+    send_request('setMyCommands', {'commands': commands})
+    
+    print("✅ Bot started successfully!")
+    print("📱 Bot is running with long polling...")
+    
+    offset = 0
+    
     while True:
         try:
-            params = {"timeout": 60, "offset": offset}
-            response = requests.get(f"{API_URL}getUpdates", params=params, timeout=65)
-            updates = response.json().get("result", [])
-            for update in updates:
-                offset = update["update_id"] + 1
-                handle_update(update)
-        except requests.RequestException as e:
-            print(f"Error: {e}")
-            continue
+            # Get updates
+            result = get_updates(offset)
+            
+            if result and result.get('ok'):
+                updates = result.get('result', [])
+                
+                for update in updates:
+                    # Process update in separate thread for instant response
+                    threading.Thread(target=process_update, args=(update,), daemon=True).start()
+                    offset = update['update_id'] + 1
+            
+        except KeyboardInterrupt:
+            print("\n🛑 Bot stopped by user")
+            break
+        except Exception as e:
+            print(f"❌ Error in main loop: {e}")
+            time.sleep(1)
 
 if __name__ == "__main__":
-    print("Bot started...")
-    poll_updates()
+    main()
