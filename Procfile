@@ -1,0 +1,1 @@
+web: goto main.py
