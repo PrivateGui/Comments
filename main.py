@@ -1,267 +1,264 @@
 import requests
-import json
 import random
 import string
 import os
 import mysql.connector
-from urllib.parse import quote
-from datetime import datetime
+from urllib.parse import quote_plus
 
-# Telegram Bot Token (replace with your bot token)
+# Bot token
 TOKEN = "812616487:PcCYPrqiWmEmfVpPWaWWzxNtvIhjoOSNrK7yFLAX"
-BASE_URL = f"https://tapi.bale.ai/bot{TOKEN}/"
+API_URL = f"https://tapi.bale.ai/bot{TOKEN}"
 
-# MySQL Database Configuration
-DB_CONFIG = {
-    'host': 'cests',
-    'user': 'root',
-    'password': 'flTurEdlcHlTcvZ9xYVsGdBY',
-    'database': 'gallant_yonath'
-}
+# Admin user IDs
+ADMINS = {844843541}  # Fill with your Telegram user IDs
 
-# Admin IDs (replace with actual admin Telegram IDs)
-ADMIN_IDS = [844843541]  # Example admin ID
+# MySQL database connection
+db = mysql.connector.connect(
+    host="cests",
+    port=3306,
+    user="root",
+    password="flTurEdlcHlTcvZ9xYVsGdBY",
+    database="gallant_yonath"
+)
+cursor = db.cursor(dictionary=True)
 
-# Temporary directory for file storage
-TMP_DIR = "/tmp/telegram_bot_files"
-if not os.path.exists(TMP_DIR):
-    os.makedirs(TMP_DIR)
+# Ensure tables exist
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS posts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    post_key VARCHAR(32) UNIQUE,
+    kind ENUM('file', 'text') NOT NULL,
+    file_id VARCHAR(255),
+    text TEXT,
+    views INT DEFAULT 0,
+    likes INT DEFAULT 0
+)
+""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS likes (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    post_key VARCHAR(32),
+    user_id BIGINT,
+    UNIQUE KEY (post_key, user_id)
+)
+""")
+db.commit()
 
-# Connect to MySQL database
-def init_db():
-    conn = mysql.connector.connect(**DB_CONFIG)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS uploads (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            upload_type VARCHAR(10),
-            file_path TEXT,
-            content TEXT,
-            random_string VARCHAR(20) UNIQUE,
-            view_count INT DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS likes (
-            upload_id INT,
-            user_id BIGINT,
-            PRIMARY KEY (upload_id, user_id),
-            FOREIGN KEY (upload_id) REFERENCES uploads(id)
-        )
-    """)
-    conn.commit()
-    cursor.close()
-    conn.close()
+def get_updates(offset=None):
+    params = {'timeout': 60, 'offset': offset}
+    resp = requests.get(API_URL + "/getUpdates", params=params)
+    return resp.json()['result']
 
-# Generate random string for /start links
-def generate_random_string(length=10):
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
-
-# Save file to /tmp
-def save_file(file_id, file_name):
-    file_info = requests.get(f"{BASE_URL}getFile?file_id={file_id}").json()
-    if file_info["ok"]:
-        file_path = file_info["result"]["file_path"]
-        file_url = f"https://tapi.bale.ai/file/bot{TOKEN}/{file_path}"
-        response = requests.get(file_url)
-        save_path = os.path.join(TMP_DIR, file_name)
-        with open(save_path, 'wb') as f:
-            f.write(response.content)
-        return save_path
-    return None
-
-# Send message with requests
 def send_message(chat_id, text, reply_markup=None):
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "reply_markup": reply_markup
-    }
-    requests.post(f"{BASE_URL}sendMessage", json=payload)
+    data = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
+    if reply_markup:
+        data['reply_markup'] = reply_markup
+    requests.post(API_URL + "/sendMessage", data=data)
 
-# Send file with requests
-def send_file(chat_id, file_path, caption="", reply_markup=None):
-    with open(file_path, 'rb') as f:
-        files = {'document': f}
-        payload = {
-            "chat_id": chat_id,
-            "caption": caption,
-            "parse_mode": "HTML"
-        }
-        if reply_markup:
-            payload["reply_markup"] = json.dumps(reply_markup)
-        requests.post(f"{BASE_URL}sendDocument", data=payload, files=files)
+def send_document(chat_id, file_id, reply_markup=None):
+    data = {'chat_id': chat_id, 'document': file_id}
+    if reply_markup:
+        data['reply_markup'] = reply_markup
+    requests.post(API_URL + "/sendDocument", data=data)
 
-# Get inline keyboard for views and likes
-def get_inline_keyboard(upload_id, view_count, user_id):
-    conn = mysql.connector.connect(**DB_CONFIG)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM likes WHERE upload_id = %s AND user_id = %s", (upload_id, user_id))
-    has_liked = cursor.fetchone()[0] > 0
-    cursor.close()
-    conn.close()
-    
-    like_text = "👍 لایک کرده‌اید" if has_liked else "👍 لایک"
-    return {
+def send_text(chat_id, text, reply_markup=None):
+    data = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
+    if reply_markup:
+        data['reply_markup'] = reply_markup
+    requests.post(API_URL + "/sendMessage", data=data)
+
+def send_reply_keyboard(chat_id, buttons):
+    keyboard = {"keyboard": [[{"text": btn} for btn in buttons]], "resize_keyboard": True}
+    send_message(chat_id, "انتخاب کنید:", reply_markup=str(keyboard).replace("'", '"'))
+
+def send_inline_keyboard(chat_id, text, post_key, views, likes, kind):
+    inline = {
         "inline_keyboard": [
             [
-                {"text": like_text, "callback_data": f"like_{upload_id}"},
-                {"text": f"👀 بازدید: {view_count}", "callback_data": f"view_{upload_id}"}
+                {"text": f"👁️ {views}", "callback_data": f"views_{post_key}"},
+                {"text": f"❤️ {likes}", "callback_data": f"like_{post_key}"}
             ]
         ]
     }
+    if kind == 'file':
+        send_document(chat_id, get_file_id(post_key), reply_markup=str(inline).replace("'", '"'))
+    else:
+        send_text(chat_id, text, reply_markup=str(inline).replace("'", '"'))
 
-# Get reply keyboard for admins
-def get_admin_keyboard():
-    return {
-        "keyboard": [
-            [{"text": "📤 آپلود فایل"}],
-            [{"text": "📝 آپلود متن"}],
-            [{"text": "📢 ارسال پیام همگانی"}]
-        ],
-        "resize_keyboard": True,
-        "one_time_keyboard": True
-    }
+def generate_key():
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=12))
 
-# Handle updates
-def handle_update(update):
-    if "message" not in update:
-        return
+def is_admin(user_id):
+    return user_id in ADMINS
 
-    message = update["message"]
-    chat_id = message["chat"]["id"]
-    user_id = message["from"]["id"]
-    is_admin = user_id in ADMIN_IDS
+def get_file_id(post_key):
+    cursor.execute("SELECT file_id FROM posts WHERE post_key=%s", (post_key,))
+    row = cursor.fetchone()
+    return row["file_id"] if row else None
 
-    # Handle commands
-    if "text" in message and message["text"].startswith("/start"):
-        random_string = message["text"].replace("/start ", "").strip() if message["text"] != "/start" else None
-        if random_string:
-            conn = mysql.connector.connect(**DB_CONFIG)
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, upload_type, file_path, content, view_count FROM uploads WHERE random_string = %s", (random_string,))
-            upload = cursor.fetchone()
-            if upload:
-                upload_id, upload_type, file_path, content, view_count = upload
-                # Increment view count
-                cursor.execute("UPDATE uploads SET view_count = view_count + 1 WHERE id = %s", (upload_id,))
-                conn.commit()
-                
-                reply_markup = get_inline_keyboard(upload_id, view_count + 1, user_id)
-                if upload_type == "file" and os.path.exists(file_path):
-                    send_file(chat_id, file_path, caption="📎 فایل دریافت شده:", reply_markup=reply_markup)
-                elif upload_type == "text":
-                    send_message(chat_id, content, reply_markup=reply_markup)
-            else:
-                send_message(chat_id, "❌ لینک نامعتبر است.")
-            cursor.close()
-            conn.close()
-        else:
-            if is_admin:
-                send_message(chat_id, "👋 سلام ادمین! از کیبورد زیر برای مدیریت استفاده کنید:", get_admin_keyboard())
-            else:
-                send_message(chat_id, "👋 سلام! خوش آمدید به ربات آپلودر.")
-        return
+def get_post(post_key):
+    cursor.execute("SELECT * FROM posts WHERE post_key=%s", (post_key,))
+    return cursor.fetchone()
 
-    # Admin-specific handling
-    if is_admin:
-        if "text" in message:
-            text = message["text"]
-            if text == "📤 آپلود فایل":
-                send_message(chat_id, "📎 لطفاً فایل خود را ارسال کنید:")
-            elif text == "📝 آپلود متن":
-                send_message(chat_id, "📝 لطفاً متن خود را ارسال کنید:")
-            elif text == "📢 ارسال پیام همگانی":
-                send_message(chat_id, "📢 پیام خود را برای پخش همگانی ارسال کنید:")
-            elif not text.startswith("/"):
-                # Handle text uploads or broadcasts
-                conn = mysql.connector.connect(**DB_CONFIG)
-                cursor = conn.cursor()
-                cursor.execute("SELECT message_id FROM uploads WHERE upload_type = 'awaiting'")
-                if cursor.fetchone():
-                    random_string = generate_random_string()
-                    cursor.execute("""
-                        UPDATE uploads SET upload_type = 'text', content = %s, random_string = %s
-                        WHERE upload_type = 'awaiting'
-                    """, (text, random_string))
-                    conn.commit()
-                    start_link = f"/start {random_string}"
-                    send_message(chat_id, f"✅ متن ذخیره شد!\nلینک: <code>{start_link}</code>")
-                    cursor.execute("DELETE FROM uploads WHERE upload_type = 'awaiting'")
-                else:
-                    # Assume broadcast
-                    cursor.execute("SELECT DISTINCT chat_id FROM uploads")
-                    users = cursor.fetchall()
-                    for user in users:
-                        send_message(user[0], text)
-                    send_message(chat_id, "✅ پیام همگانی ارسال شد!")
-                cursor.close()
-                conn.close()
+def increment_view(post_key):
+    cursor.execute("UPDATE posts SET views=views+1 WHERE post_key=%s", (post_key,))
+    db.commit()
 
-        elif "document" in message or "photo" in message:
-            # Handle file uploads
-            file_id = message.get("document", {}).get("file_id") or message.get("photo", [{}])[-1].get("file_id")
-            file_name = message.get("document", {}).get("file_name", f"file_{datetime.now().timestamp()}.dat")
-            file_path = save_file(file_id, file_name)
-            if file_path:
-                conn = mysql.connector.connect(**DB_CONFIG)
-                cursor = conn.cursor()
-                random_string = generate_random_string()
-                cursor.execute("""
-                    INSERT INTO uploads (upload_type, file_path, random_string)
-                    VALUES (%s, %s, %s)
-                """, ("file", file_path, random_string))
-                conn.commit()
-                start_link = f"/start {random_string}"
-                send_message(chat_id, f"✅ فایل ذخیره شد!\nلینک: <code>{start_link}</code>")
-                cursor.close()
-                conn.close()
-            else:
-                send_message(chat_id, "❌ خطا در ذخیره فایل!")
+def increment_like(post_key, user_id):
+    try:
+        cursor.execute("INSERT INTO likes (post_key, user_id) VALUES (%s, %s)", (post_key, user_id))
+        cursor.execute("UPDATE posts SET likes=likes+1 WHERE post_key=%s", (post_key,))
+        db.commit()
+        return True
+    except mysql.connector.Error:
+        db.rollback()
+        return False
 
-    # Handle callback queries (likes)
-    if "callback_query" in update:
-        callback = update["callback_query"]
-        chat_id = callback["message"]["chat"]["id"]
-        user_id = callback["from"]["id"]
-        data = callback["data"]
-        upload_id = int(data.split("_")[1])
+def has_liked(post_key, user_id):
+    cursor.execute("SELECT 1 FROM likes WHERE post_key=%s AND user_id=%s", (post_key, user_id))
+    return cursor.fetchone() is not None
 
-        if data.startswith("like_"):
-            conn = mysql.connector.connect(**DB_CONFIG)
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM likes WHERE upload_id = %s AND user_id = %s", (upload_id, user_id))
-            if cursor.fetchone()[0] == 0:
-                cursor.execute("INSERT INTO likes (upload_id, user_id) VALUES (%s, %s)", (upload_id, user_id))
-                conn.commit()
-                cursor.execute("SELECT view_count FROM uploads WHERE id = %s", (upload_id,))
-                view_count = cursor.fetchone()[0]
-                reply_markup = get_inline_keyboard(upload_id, view_count, user_id)
-                requests.post(f"{BASE_URL}editMessageReplyMarkup", json={
-                    "chat_id": chat_id,
-                    "message_id": callback["message"]["message_id"],
-                    "reply_markup": reply_markup
-                })
-            cursor.close()
-            conn.close()
+def handle_admin_command(chat_id, text, state):
+    if text == "آپلود فایل 📁":
+        send_message(chat_id, "لطفا فایل خود را ارسال کنید.")
+        state['mode'] = 'awaiting_file'
+    elif text == "آپلود متن 📝":
+        send_message(chat_id, "لطفا متن خود را ارسال کنید.")
+        state['mode'] = 'awaiting_text'
+    elif text == "ارسال پیام همگانی 📢":
+        send_message(chat_id, "لطفا پیام خود را وارد کنید.")
+        state['mode'] = 'awaiting_broadcast'
+    elif text == "لغو ❌":
+        send_message(chat_id, "لغو شد.")
+        state['mode'] = None
 
-# Main long polling loop
-def main():
-    init_db()
-    offset = None
-    while True:
+def handle_file_upload(chat_id, file_id):
+    key = generate_key()
+    cursor.execute("INSERT INTO posts (post_key, kind, file_id) VALUES (%s, 'file', %s)", (key, file_id))
+    db.commit()
+    link = f"https://t.me/{get_bot_username()}?start={key}"
+    send_message(chat_id, f"✅ فایل بارگذاری شد!\n\n🔗 برای اشتراک‌گذاری:\n{link}")
+    
+def handle_text_upload(chat_id, text):
+    key = generate_key()
+    cursor.execute("INSERT INTO posts (post_key, kind, text) VALUES (%s, 'text', %s)", (key, text))
+    db.commit()
+    link = f"https://t.me/{get_bot_username()}?start={key}"
+    send_message(chat_id, f"✅ متن ذخیره شد!\n\n🔗 برای اشتراک‌گذاری:\n{link}")
+
+def handle_broadcast(text, kind, file_id=None):
+    cursor.execute("SELECT DISTINCT user_id FROM likes")  # or maintain your own user table
+    users = [u['user_id'] for u in cursor.fetchall()]
+    for uid in users:
         try:
-            params = {"timeout": 60, "offset": offset}
-            response = requests.get(f"{BASE_URL}getUpdates", params=params)
-            data = response.json()
-            if data["ok"]:
-                for update in data["result"]:
-                    handle_update(update)
-                    offset = update["update_id"] + 1
-        except Exception as e:
-            print(f"Error: {e}")
+            if kind == 'file':
+                send_document(uid, file_id)
+            else:
+                send_text(uid, text)
+        except Exception:
+            pass
+
+def get_bot_username():
+    if not hasattr(get_bot_username, "username"):
+        resp = requests.get(API_URL + "/getMe").json()
+        get_bot_username.username = resp["result"]["username"]
+    return get_bot_username.username
+
+def main():
+    offset = None
+    user_states = {}
+    while True:
+        updates = get_updates(offset)
+        for upd in updates:
+            offset = upd["update_id"] + 1
+            message = upd.get("message")
+            callback = upd.get("callback_query")
+            
+            if message:
+                chat_id = message["chat"]["id"]
+                user_id = message["from"]["id"]
+                text = message.get("text", "")
+                state = user_states.setdefault(user_id, {"mode": None})
+                
+                if is_admin(user_id):
+                    if text == "/start":
+                        send_reply_keyboard(chat_id, ["آپلود فایل 📁", "آپلود متن 📝", "ارسال پیام همگانی 📢", "لغو ❌"])
+                        continue
+
+                    # Admin command states
+                    if state["mode"] is None:
+                        handle_admin_command(chat_id, text, state)
+                        continue
+                    elif state["mode"] == "awaiting_file" and "document" in message:
+                        file_id = message["document"]["file_id"]
+                        handle_file_upload(chat_id, file_id)
+                        state["mode"] = None
+                        continue
+                    elif state["mode"] == "awaiting_text" and text:
+                        handle_text_upload(chat_id, text)
+                        state["mode"] = None
+                        continue
+                    elif state["mode"] == "awaiting_broadcast":
+                        # Optional: accept file or text
+                        if "document" in message:
+                            handle_broadcast(None, 'file', file_id=message["document"]["file_id"])
+                        else:
+                            handle_broadcast(text, 'text')
+                        send_message(chat_id, "پیام برای همه ارسال شد! ✅")
+                        state["mode"] = None
+                        continue
+
+                # Handle /start <key>
+                if text.startswith("/start "):
+                    key = text.split(" ", 1)[1].strip()
+                    post = get_post(key)
+                    if not post:
+                        send_message(chat_id, "❌ لینک معتبر نیست.")
+                        continue
+
+                    increment_view(key)
+                    views = post['views'] + 1
+                    likes = post['likes']
+                    if post["kind"] == "file":
+                        send_inline_keyboard(chat_id, None, key, views, likes, "file")
+                    else:
+                        send_inline_keyboard(chat_id, post["text"], key, views, likes, "text")
+                elif text == "/start":
+                    if is_admin(user_id):
+                        send_reply_keyboard(chat_id, ["آپلود فایل 📁", "آپلود متن 📝", "ارسال پیام همگانی 📢", "لغو ❌"])
+                    else:
+                        send_message(chat_id, "سلام! به بات آپلودر خوش آمدید. 😊\n\nبرای دریافت فایل یا متن، لینک مخصوص را ارسال کنید.")
+                # Ignore other messages for non-admins to prevent accidental uploads
+
+            elif callback:
+                data = callback["data"]
+                chat_id = callback["message"]["chat"]["id"]
+                user_id = callback["from"]["id"]
+                if data.startswith("like_"):
+                    key = data[5:]
+                    if has_liked(key, user_id):
+                        requests.post(API_URL + "/answerCallbackQuery", data={
+                            "callback_query_id": callback["id"],
+                            "text": "شما قبلاً لایک کرده‌اید! ❤️"
+                        })
+                    else:
+                        if increment_like(key, user_id):
+                            post = get_post(key)
+                            likes = post["likes"]
+                            views = post["views"]
+                            requests.post(API_URL + "/answerCallbackQuery", data={
+                                "callback_query_id": callback["id"],
+                                "text": "لایک شما ثبت شد! ❤️"
+                            })
+                            send_inline_keyboard(chat_id, post["text"] if post["kind"] == "text" else None, key, views, likes, post["kind"])
+                elif data.startswith("views_"):
+                    key = data[6:]
+                    post = get_post(key)
+                    if post:
+                        requests.post(API_URL + "/answerCallbackQuery", data={
+                            "callback_query_id": callback["id"],
+                            "text": f"تعداد بازدید: {post['views']} 👁️"
+                        })
 
 if __name__ == "__main__":
     main()
