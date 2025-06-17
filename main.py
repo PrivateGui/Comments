@@ -120,7 +120,7 @@ def handle_upload_file(chat_id, message, username):
     file_id = message['document']['file_id']
     file_name = message['document']['file_name']
     file_path = requests.get(f'{URL}/getFile', params={'file_id': file_id}).json()['result']['file_path']
-    file_url = f'https://api.telegram.org/file/bot{TOKEN}/{file_path}'
+    file_url = f'https://tapi.bale.ai/file/bot{TOKEN}/{file_path}'
     file_data = requests.get(file_url).content
     save_path = f'{UPLOAD_DIR}/{file_name}'
     with open(save_path, 'wb') as f:
