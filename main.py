@@ -37,38 +37,46 @@ class TelegramBot:
             conn = mysql.connector.connect(**DB_CONFIG)
             cursor = conn.cursor()
             
+            # Drop existing tables to recreate with correct structure
+            cursor.execute('DROP TABLE IF EXISTS likes')
+            cursor.execute('DROP TABLE IF EXISTS broadcast_queue')
+            cursor.execute('DROP TABLE IF EXISTS files')
+            
             # Create files table
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS files (
+                CREATE TABLE files (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     file_id VARCHAR(255),
-                    file_type VARCHAR(50),
+                    file_type VARCHAR(50) NOT NULL,
                     file_name VARCHAR(255),
                     file_path VARCHAR(500),
-                    link_code VARCHAR(100) UNIQUE,
-                    content TEXT,
+                    link_code VARCHAR(100) NOT NULL UNIQUE,
+                    content LONGTEXT,
                     upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    views INT DEFAULT 0
+                    views INT DEFAULT 0,
+                    INDEX idx_link_code (link_code)
                 )
             ''')
             
             # Create likes table
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS likes (
+                CREATE TABLE likes (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    user_id BIGINT,
-                    link_code VARCHAR(100),
+                    user_id BIGINT NOT NULL,
+                    link_code VARCHAR(100) NOT NULL,
                     like_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE KEY unique_like (user_id, link_code)
+                    UNIQUE KEY unique_like (user_id, link_code),
+                    INDEX idx_link_code (link_code),
+                    FOREIGN KEY (link_code) REFERENCES files(link_code) ON DELETE CASCADE
                 )
             ''')
             
             # Create broadcast messages table
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS broadcast_queue (
+                CREATE TABLE broadcast_queue (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    message_type VARCHAR(50),
-                    content TEXT,
+                    message_type VARCHAR(50) NOT NULL,
+                    content LONGTEXT,
                     file_id VARCHAR(255),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     sent BOOLEAN DEFAULT FALSE
@@ -78,9 +86,36 @@ class TelegramBot:
             conn.commit()
             conn.close()
             print("✅ دیتابیس با موفقیت راه‌اندازی شد")
+            print("✅ جداول با ساختار صحیح ایجاد شدند")
             
         except Error as e:
             print(f"❌ خطا در راه‌اندازی دیتابیس: {e}")
+            # Try to continue even if there's an error
+            try:
+                conn = mysql.connector.connect(**DB_CONFIG)
+                cursor = conn.cursor()
+                
+                # Check if files table exists and add missing columns
+                cursor.execute("SHOW TABLES LIKE 'files'")
+                if cursor.fetchone():
+                    # Check if link_code column exists
+                    cursor.execute("SHOW COLUMNS FROM files LIKE 'link_code'")
+                    if not cursor.fetchone():
+                        cursor.execute("ALTER TABLE files ADD COLUMN link_code VARCHAR(100) UNIQUE")
+                        print("✅ ستون link_code اضافه شد")
+                    
+                    # Check if views column exists
+                    cursor.execute("SHOW COLUMNS FROM files LIKE 'views'")
+                    if not cursor.fetchone():
+                        cursor.execute("ALTER TABLE files ADD COLUMN views INT DEFAULT 0")
+                        print("✅ ستون views اضافه شد")
+                
+                conn.commit()
+                conn.close()
+                print("✅ ساختار جدول به‌روزرسانی شد")
+                
+            except Error as e2:
+                print(f"❌ خطا در به‌روزرسانی جدول: {e2}")
     
     def generate_random_code(self, length=12):
         """Generate random string for links"""
@@ -400,21 +435,29 @@ class TelegramBot:
                 file_name = 'audio.mp3'
             
             if file_id:
+                # Generate unique link code
+                link_code = self.generate_random_code()
+                
+                # Make sure link code is unique
+                conn = self.get_db_connection()
+                cursor = conn.cursor()
+                
+                # Check if link_code already exists (very unlikely but just in case)
+                while True:
+                    cursor.execute("SELECT 1 FROM files WHERE link_code = %s", (link_code,))
+                    if not cursor.fetchone():
+                        break
+                    link_code = self.generate_random_code()
+                
                 # Download file
                 file_path = self.download_file(file_id)
                 
                 if file_path:
-                    # Generate link code
-                    link_code = self.generate_random_code()
-                    
                     # Save to database
-                    conn = self.get_db_connection()
-                    cursor = conn.cursor()
-                    
                     cursor.execute('''
-                        INSERT INTO files (file_id, file_type, file_name, file_path, link_code)
-                        VALUES (%s, %s, %s, %s, %s)
-                    ''', (file_id, file_type, file_name, file_path, link_code))
+                        INSERT INTO files (file_id, file_type, file_name, file_path, link_code, views)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    ''', (file_id, file_type, file_name, file_path, link_code, 0))
                     
                     conn.commit()
                     conn.close()
@@ -434,25 +477,37 @@ class TelegramBot:
                     # Reset user state
                     self.user_states[chat_id] = None
                 else:
+                    conn.close()
                     self.send_message(chat_id, "❌ خطا در دانلود فایل!")
+            else:
+                self.send_message(chat_id, "❌ نوع فایل پشتیبانی نمی‌شود!")
             
         except Exception as e:
+            print(f"خطا در آپلود فایل: {e}")
             self.send_message(chat_id, f"❌ خطا در آپلود فایل: {str(e)}")
     
     def handle_text_upload(self, chat_id, text):
         """Handle text upload from admin"""
         try:
-            # Generate link code
+            # Generate unique link code
             link_code = self.generate_random_code()
             
-            # Save to database
+            # Make sure link code is unique
             conn = self.get_db_connection()
             cursor = conn.cursor()
             
+            # Check if link_code already exists
+            while True:
+                cursor.execute("SELECT 1 FROM files WHERE link_code = %s", (link_code,))
+                if not cursor.fetchone():
+                    break
+                link_code = self.generate_random_code()
+            
+            # Save to database
             cursor.execute('''
-                INSERT INTO files (file_type, content, link_code)
-                VALUES (%s, %s, %s)
-            ''', ('text', text, link_code))
+                INSERT INTO files (file_type, content, link_code, views)
+                VALUES (%s, %s, %s, %s)
+            ''', ('text', text, link_code, 0))
             
             conn.commit()
             conn.close()
@@ -473,6 +528,7 @@ class TelegramBot:
             self.user_states[chat_id] = None
             
         except Exception as e:
+            print(f"خطا در آپلود متن: {e}")
             self.send_message(chat_id, f"❌ خطا در آپلود متن: {str(e)}")
     
     def handle_broadcast_message(self, chat_id, message):
