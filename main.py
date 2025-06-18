@@ -424,7 +424,7 @@ class TelegramBot:
                     'text': f"❌ خطا: {str(e)}"
                 })
     
-    def handle_file_upload(self, chat_id, message):
+    
         """Handle file upload from admin"""
         try:
             file_id = None
@@ -498,7 +498,81 @@ class TelegramBot:
             
         except Exception as e:
             print(f"خطا در آپلود فایل: {e}")
-            self.send_message(chat_id, f"❌ خطا در آپلود فایل: {str(e)}")
+            self.send_message(chat_id, f"❌ خطا در آپلود فایل: {str(e)}")def handle_file_upload(self, chat_id, message):
+    """Handle file upload from admin"""
+    try:
+        file_id = None
+        file_type = None
+        file_name = None
+        
+        if 'document' in message:
+            file_id = message['document']['file_id']
+            file_type = 'document'
+            file_name = message['document'].get('file_name', f'document_{int(time.time())}.bin')  # Use original file name
+        elif 'photo' in message:
+            file_id = message['photo'][-1]['file_id']
+            file_type = 'photo'
+            file_name = message['photo'][-1].get('file_name', f'photo_{int(time.time())}.jpg')  # Use original or generate
+        elif 'video' in message:
+            file_id = message['video']['file_id']
+            file_type = 'video'
+            file_name = message['video'].get('file_name', f'video_{int(time.time())}.mp4')  # Use original or generate
+        elif 'audio' in message:
+            file_id = message['audio']['file_id']
+            file_type = 'audio'
+            file_name = message['audio'].get('file_name', f'audio_{int(time.time())}.mp3')  # Use original or generate
+        
+        if file_id:
+            # Generate unique link code
+            link_code = self.generate_random_code()
+            
+            # Make sure link code is unique
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            
+            # Check if link_code already exists
+            while True:
+                cursor.execute("SELECT 1 FROM files WHERE link_code = %s", (link_code,))
+                if not cursor.fetchone():
+                    break
+                link_code = self.generate_random_code()
+            
+            # Download file
+            file_path = self.download_file(file_id)
+            
+            if file_path:
+                # Save to database with original file name
+                cursor.execute('''
+                    INSERT INTO files (file_id, file_type, file_name, file_path, link_code, views)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                ''', (file_id, file_type, file_name, file_path, link_code, 0))
+                
+                conn.commit()
+                conn.close()
+                
+                # Send link to admin
+                share_link = f"/start {link_code}"
+                self.send_message(
+                    chat_id,
+                    f"✅ فایل با موفقیت آپلود شد!\n\n"
+                    f"📎 نام فایل: {file_name}\n"
+                    f"🔗 لینک اشتراک‌گذاری:\n"
+                    f"```{share_link}```\n\n"
+                    f"این لینک را برای کاربران ارسال کنید.",
+                    parse_mode='Markdown'
+                )
+                
+                # Reset user state
+                self.user_states[chat_id] = None
+            else:
+                conn.close()
+                self.send_message(chat_id, "❌ خطا در دانلود فایل!")
+        else:
+            self.send_message(chat_id, "❌ نوع فایل پشتیبانی نمی‌شود!")
+        
+    except Exception as e:
+        print(f"خطا در آپلود فایل: {e}")
+        self.send_message(chat_id, f"❌ خطا در آپلود فایل: {str(e)}")
     
     def handle_text_upload(self, chat_id, text):
         """Handle text upload from admin"""
