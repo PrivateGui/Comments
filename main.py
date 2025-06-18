@@ -138,7 +138,7 @@ class TelegramBot:
             
         requests.post(API_URL + "sendMessage", data=data)
     
-    def send_document(self, chat_id, file_path, caption=None, reply_markup=None):
+    
         """Send document to user"""
         try:
             with open(file_path, 'rb') as file:
@@ -151,7 +151,21 @@ class TelegramBot:
                     
                 requests.post(API_URL + "sendDocument", files=files, data=data)
         except Exception as e:
-            self.send_message(chat_id, f"❌ خطا در ارسال فایل: {str(e)}")
+            self.send_message(chat_id, f"❌ خطا در ارسال فایل: {str(e)}")def send_document(self, chat_id, file_path, caption=None, reply_markup=None):
+    """Send document to user"""
+    try:
+        file_name = os.path.basename(file_path)  # Get original file name
+        with open(file_path, 'rb') as file:
+            files = {'document': (file_name, file)}  # Use tuple (filename, file)
+            data = {'chat_id': chat_id}
+            if caption:
+                data['caption'] = caption
+            if reply_markup:
+                data['reply_markup'] = json.dumps(reply_markup)
+                
+            requests.post(API_URL + "sendDocument", files=files, data=data)
+    except Exception as e:
+        self.send_message(chat_id, f"❌ خطا در ارسال فایل: {str(e)}")
     
     def send_photo_by_id(self, chat_id, file_id, caption=None, reply_markup=None):
         """Send photo by file_id"""
