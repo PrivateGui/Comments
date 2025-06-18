@@ -14,7 +14,7 @@ BOT_TOKEN = "812616487:PcCYPrqiWmEmfVpPWaWWzxNtvIhjoOSNrK7yFLAX"
 API_URL = f"https://tapi.bale.ai/bot{BOT_TOKEN}/"
 
 # Admin user IDs (replace with actual admin user IDs)
-ADMIN_IDS = [844843541, 62925245]  # Add your admin user IDs here
+ADMIN_IDS = [844843541, 1085839779]  # Add your admin user IDs here
 
 # Database configuration
 DB_CONFIG = {
