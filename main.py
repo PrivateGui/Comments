@@ -84,7 +84,7 @@ def send_photo(chat_id, photo_path, caption=None, reply_to_message_id=None):
         response = requests.post(f"{TELEGRAM_API_URL}/sendPhoto", data=payload, files={"photo": photo})
     return response.json()
 
-def generate_image(prompt, output_path="image.webp"):
+def generate_image(prompt, output_path="/tmp/image.webp"):
     """Generate an image using Pollinations AI API."""
     try:
         r_seed = random.randint(1, 1000000000000)
@@ -125,7 +125,7 @@ def handle_message(update):
     if text.startswith("/help"):
         send_message(
             chat_id,
-            "🖌️ **راهنمای ربات فانوس دریایی** 🖌️\n- یک توضیح بفرستید تا تصویر تولید شود (مثال: `غروب آفتاب روی جنگل`).\n- من یک تصویر تولید کرده و برای شما ارسال می‌کنم.\n- دستورات:\n  `/start` - شروع ربات\n  `/help` - نمایش این راهنما\n**نکته**: توضیحات دقیق‌تر، نتایج بهتری می‌دهد! اگر مشکلی پیش آمد، به شما اطلاع می‌دهم.",
+            "این یک راهنما است."
             reply_to_message_id=message_id,
         )
         return
