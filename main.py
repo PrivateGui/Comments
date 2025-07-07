@@ -125,7 +125,7 @@ def handle_message(update):
     if text.startswith("/help"):
         send_message(
             chat_id,
-            "این یک راهنما است."
+            "این یک راهنما است.",
             reply_to_message_id=message_id,
         )
         return
