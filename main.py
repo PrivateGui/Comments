@@ -6,7 +6,7 @@ import random
 from urllib.parse import quote
 
 # Telegram Bot Token (replace with your own from BotFather)
-TELEGRAM_TOKEN = "889732515:Q588DCcltyOVu9rPIJXMKGu4SZjuI7sHbCEEKFlH"
+TELEGRAM_TOKEN = "1183415743:QXFQcoHMCFkzfAPcwXpA1hnTEetWSMAOqWDCh1Ba"
 TELEGRAM_API_URL = f"https://tapi.bale.ai/bot{TELEGRAM_TOKEN}"
 
 # Google Translate API endpoint (public, no API key required)
