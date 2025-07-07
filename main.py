@@ -159,7 +159,7 @@ def handle_message(update):
     response_message_id = response.get("result", {}).get("message_id")
 
     # Generate the image
-    output_path = f"image_{chat_id}_{message_id}.webp"
+    output_path = f"/tmp/image_{chat_id}_{message_id}.webp"
     success, result = generate_image(prompt, output_path)
 
     if success:
