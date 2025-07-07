@@ -1,5 +1,1 @@
-diffusers
-transformers
-torch
-accelerate
-flask
+requests
