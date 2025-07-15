@@ -118,7 +118,7 @@ def main():
 
                 # Generate image URL
                 r_seed = random.randint(1, 1000000000000)
-                image_url = f"https://image.pollinations.ai/prompt/{prompt}?width=1024&height=1024&seed={r_seed}&model Bunches: 1
+                image_url = f"https://image.pollinations.ai/prompt/{prompt}?width=1024&height=1024&seed={r_seed}&model=flux&nologo=true&private=false&enhance=false&safe=false"
                 # Add watermark
                 output_path = add_watermark(image_url, WATERMARK_URL)
                 if output_path:
