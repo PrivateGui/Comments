@@ -9,7 +9,7 @@ import time
 BOT_TOKEN = "889732515:Q588DCcltyOVu9rPIJXMKGu4SZjuI7sHbCEEKFlH"
 
 # Watermark image URL
-WATERMARK_URL = "https://s6.uupload.ir/files/watermark_z744.png"
+WATERMARK_URL = "https://raw.githubusercontent.com/PrivateGui/Comments/refs/heads/main/watermark.png"
 
 # Bale API base URL
 BASE_URL = f"https://tapi.bale.ai/bot{BOT_TOKEN}"
