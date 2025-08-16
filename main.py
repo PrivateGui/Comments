@@ -1,146 +1,166 @@
-import random
 import requests
-from PIL import Image
-from io import BytesIO
-import os
 import time
+import datetime
+from persiantools.jdatetime import JalaliDateTime
 
-# Your Bale bot token
-BOT_TOKEN = "889732515:Q588DCcltyOVu9rPIJXMKGu4SZjuI7sHbCEEKFlH"
+# === CONFIG ===
+BOT_TOKEN = "1782025704:FqXmSfs6Rn82c65UIxWFH81J2i4m9gluqq6K6hCw"
+API_URL = f"https://tapi.bale.ai/bot{BOT_TOKEN}"
+WHITELIST = [844843541, 443595656]  # فقط آیدی عددی ادمین‌ها
+REQUESTS_API = "https://mjvmwuifdbhahgomffvd.supabase.co/functions/v1/get-admin-requests"
+BOT_USERNAME = "tgzsystembot"  # نام کاربری ربات (بدون @)
 
-# Watermark image URL
-WATERMARK_URL = "https://raw.githubusercontent.com/PrivateGui/Comments/refs/heads/main/watermark.png"
+# حافظه درخواست‌ها
+known_requests = set()
 
-# Bale API base URL
-BASE_URL = f"https://tapi.bale.ai/bot{BOT_TOKEN}"
-
-# Temp directory for images
-TMP_DIR = "/tmp/"
-if not os.path.exists(TMP_DIR):
-    os.makedirs(TMP_DIR)
-
+# === FUNCTIONS ===
 def get_updates(offset=None):
-    """Fetch updates using long polling"""
-    url = f"{BASE_URL}/getUpdates"
-    params = {"timeout": 100, "offset": offset}
+    params = {"timeout": 30, "offset": offset}
     try:
-        response = requests.get(url, params=params, timeout=120)
-        response.raise_for_status()
-        return response.json().get("result", [])
-    except requests.RequestException as e:
-        print(f"[ERROR] Fetching updates: {e}")
+        resp = requests.get(f"{API_URL}/getUpdates", params=params, timeout=40)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            return {"result": []}
+    except Exception as e:
+        print("❌ get_updates error:", e)
+        return {"result": []}
+
+def send_message(chat_id, text, reply_markup=None):
+    data = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    if reply_markup:
+        data["reply_markup"] = reply_markup
+    try:
+        requests.post(f"{API_URL}/sendMessage", json=data, timeout=20)
+    except Exception as e:
+        print("❌ send_message error:", e)
+
+def get_admin_requests():
+    try:
+        res = requests.get(REQUESTS_API, timeout=10)
+        return res.json().get("data", [])
+    except Exception as e:
+        print("❌ get_admin_requests error:", e)
         return []
 
-def send_photo(chat_id, photo_path):
-    """Send photo to user"""
-    url = f"{BASE_URL}/sendPhoto"
-    with open(photo_path, "rb") as photo:
-        files = {"photo": photo}
-        data = {"chat_id": chat_id}
-        try:
-            response = requests.post(url, data=data, files=files)
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            print(f"[ERROR] Sending photo: {e}")
-            return None
+def to_persian_digits(text: str) -> str:
+    persian_map = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+    return str(text).translate(persian_map)
 
-def send_message(chat_id, text):
-    """Send text message to user"""
-    url = f"{BASE_URL}/sendMessage"
-    data = {"chat_id": chat_id, "text": text}
+def format_datetime(iso_time: str) -> str:
     try:
-        response = requests.post(url, data=data)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        print(f"[ERROR] Sending message: {e}")
-        return None
+        dt = datetime.datetime.fromisoformat(iso_time.replace("Z", "+00:00"))
+        jalali = JalaliDateTime.to_jalali(dt)
+        return to_persian_digits(jalali.strftime("%Y/%m/%d ⏰ %H:%M"))
+    except:
+        return "⏰ نامشخص"
 
-def add_watermark(image_url, watermark_url):
-    """Download image, add watermark, and save"""
-    try:
-        # Download main image
-        response = requests.get(image_url)
-        response.raise_for_status()
-        image = Image.open(BytesIO(response.content)).convert("RGBA")
+def format_request(r):
+    status_map = {
+        "approved": "✅ تایید شده",
+        "rejected": "❌ رد شده"
+    }
+    status = status_map.get(r.get("status"), "⏳ در انتظار")
 
-        # Download watermark
-        wm_response = requests.get(watermark_url)
-        wm_response.raise_for_status()
-        watermark = Image.open(BytesIO(wm_response.content)).convert("RGBA")
+    msg = (
+        f"*👤 نام:* {r.get('full_name')}\n"
+        f"*🔗 یوزرنیم:* {r.get('username')}\n"
+        f"*📞 تلفن:* {to_persian_digits(r.get('phone'))}\n"
+        f"*📧 ایمیل:* {r.get('email')}\n"
+        f"*📝 دلیل:* {r.get('reason')}\n"
+        f"*وضعیت:* {status}\n"
+        f"*⏰ ایجاد:* {format_datetime(r.get('created_at'))}\n"
+        f"*🔄 آخرین تغییر:* {format_datetime(r.get('updated_at'))}\n"
+        f"[/start](https://ble.ir/{BOT_USERNAME}?start={r.get('id')})"
+    )
+    return msg
 
-        # Resize watermark
-        wm_width = image.width // 4
-        wm_height = int(watermark.height * (wm_width / watermark.width))
-        watermark = watermark.resize((wm_width, wm_height), Image.Resampling.LANCZOS)
+# === KEYBOARD ===
+MAIN_KEYBOARD = {
+    "keyboard": [
+        ["📋 درخواست ها"],
+        ["ℹ️ راهنما", "🚪 خروج"]
+    ],
+    "resize_keyboard": True
+}
 
-        # Position watermark (bottom-right)
-        padding = 20
-        position = (image.width - wm_width - padding, image.height - wm_height - padding)
+# === BACKGROUND CHECKER ===
+def check_new_requests():
+    global known_requests
+    reqs = get_admin_requests()
+    new_found = []
+    for r in reqs:
+        if r["id"] not in known_requests:
+            known_requests.add(r["id"])
+            new_found.append(r)
+    return new_found
 
-        # Combine image + watermark
-        result = Image.new("RGBA", image.size)
-        result.paste(image, (0, 0))
-        result.paste(watermark, position, watermark)
-
-        # Save to /tmp with unique name
-        filename = f"watermarked_{int(time.time() * 1000)}.jpg"
-        path = os.path.join(TMP_DIR, filename)
-        result.convert("RGB").save(path, "JPEG", quality=95)
-        return path
-    except Exception as e:
-        print(f"[ERROR] Processing image: {e}")
-        return None
-
-def cleanup_old_files():
-    """Remove old files from /tmp (older than 10 mins)"""
-    now = time.time()
-    for file in os.listdir(TMP_DIR):
-        path = os.path.join(TMP_DIR, file)
-        if os.path.isfile(path) and (now - os.path.getmtime(path)) > 600:
-            os.remove(path)
-            print(f"[INFO] Deleted old file: {file}")
-
+# === MAIN LOOP ===
 def main():
+    print("🤖 Bot is running...")
     offset = None
-    print("[INFO] Bot is running...")
+
+    # پر کردن known_requests برای جلوگیری از اسپم اولیه
+    for r in get_admin_requests():
+        known_requests.add(r["id"])
+
     while True:
+        # --- Telegram updates ---
         updates = get_updates(offset)
-        for update in updates:
-            if "message" not in update:
-                continue
 
-            message = update["message"]
-            chat_id = message["chat"]["id"]
-            if "text" not in message:
-                continue
+        if "result" in updates:
+            for update in updates["result"]:
+                offset = update["update_id"] + 1
 
-            text = message["text"].strip()
+                if "message" in update:
+                    chat_id = update["message"]["chat"]["id"]
+                    user_id = update["message"]["from"]["id"]
+                    text = update["message"].get("text", "")
 
-            if text == "/start":
-                send_message(chat_id, "سلام! 👋 برای ساخت تصویر از دستور زیر استفاده کنید:\n/gen <متن>")
-            
-            elif text.startswith("/gen"):
-                prompt = text[4:].strip()
-                if not prompt:
-                    send_message(chat_id, "لطفاً متن بعد از /gen وارد کنید. مثال:\n/gen گربه روی صندلی")
-                else:
-                    send_message(chat_id, "در حال ساخت تصویر... ⏳")
-                    r_seed = random.randint(1, 10**12)
-                    image_url = f"https://image.pollinations.ai/prompt/{prompt}?width=1024&height=1024&seed={r_seed}&model=flux&nologo=true"
-                    
-                    output_path = add_watermark(image_url, WATERMARK_URL)
-                    if output_path:
-                        send_photo(chat_id, output_path)
-                    else:
-                        send_message(chat_id, "❌ مشکلی در ساخت تصویر پیش آمد. دوباره تلاش کنید.")
-            
-            # Update offset after processing each update
-            offset = update["update_id"] + 1
-        
-        cleanup_old_files()  # Delete old files every cycle
-        time.sleep(1)  # Prevent API hammering
+                    if user_id not in WHITELIST:
+                        send_message(chat_id, "🚫 شما دسترسی ندارید.")
+                        continue
+
+                    # شروع
+                    if text.startswith("/start"):
+                        args = text.split()
+                        if len(args) > 1:  # /start <id>
+                            req_id = args[1]
+                            all_reqs = get_admin_requests()
+                            for r in all_reqs:
+                                if r["id"] == req_id:
+                                    send_message(chat_id, format_request(r))
+                                    break
+                        else:
+                            send_message(chat_id, "سلام ادمین عزیز ✨\nبه پنل مدیریت خوش آمدید 🌹",
+                                         reply_markup=MAIN_KEYBOARD)
+
+                    elif text == "📋 درخواست ها":
+                        reqs = get_admin_requests()
+                        if not reqs:
+                            send_message(chat_id, "📭 هیچ درخواستی وجود ندارد.")
+                        else:
+                            for r in reqs:
+                                send_message(chat_id, format_request(r))
+
+                    elif text == "ℹ️ راهنما":
+                        send_message(chat_id, "📖 راهنما:\n- درخواست‌ها در بخش «📋 درخواست ها» نمایش داده می‌شوند.\n- درخواست‌های جدید به صورت خودکار اطلاع‌رسانی می‌شوند.")
+
+                    elif text == "🚪 خروج":
+                        send_message(chat_id, "👋 خداحافظ! برای بازگشت دوباره /start بزنید.")
+
+        # --- Background new request check ---
+        new_reqs = check_new_requests()
+        if new_reqs:
+            for admin_id in WHITELIST:
+                for r in new_reqs:
+                    send_message(admin_id, f"🆕 درخواست جدید دریافت شد!\n\n{format_request(r)}")
+
+        time.sleep(2)
 
 if __name__ == "__main__":
     main()
