@@ -55,7 +55,7 @@ def _guess_content_type_from_ext(ext):
 
 def fetch_waifu_image():
     # get the waifu image URL
-    res = requests.get("https://api.waifu.pics/nsfw/waifu", timeout=15)
+    res = requests.get("https://api.waifu.pics/nsfw/ero", timeout=15)
     res.raise_for_status()
     data = res.json()
     img_url = data.get("url")
